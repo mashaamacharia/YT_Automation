@@ -1,0 +1,1628 @@
+{
+  "name": "YouTube Automation Pipeline",
+  "nodes": [
+    {
+      "id": "node1",
+      "name": "Schedule \u2014 Every Monday 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -100,
+        -120
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "telegram-trigger",
+      "name": "Telegram \u2014 Listen for /start",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -100,
+        80
+      ],
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "validate-chat-id",
+      "name": "Validate \u2014 Check Chat ID & /start",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        200,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-chat-id",
+              "leftValue": "={{ $json.message.chat.id.toString() }}",
+              "rightValue": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "check-start-cmd",
+              "leftValue": "={{ $json.message.text }}",
+              "rightValue": "/start",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "merge-triggers",
+      "name": "Merge \u2014 Combine Triggers",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        500,
+        -120
+      ],
+      "parameters": {
+        "mode": "chooseBranch",
+        "numberInputs": 2,
+        "chooseBranchMode": "waitForAll",
+        "output": "specifiedInput",
+        "useDataOfInput": 1
+      }
+    },
+    {
+      "id": "node2",
+      "name": "Generate job_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        750,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst job_id = crypto.randomBytes(8).toString('hex');\n$workflow.staticData.job_id = job_id;\n$workflow.staticData.pipeline_started_at = new Date().toISOString();\n$workflow.staticData.phase = 'phase_1_complete';\nreturn [{\n  json: {\n    job_id,\n    pipeline_started_at: $workflow.staticData.pipeline_started_at,\n    trigger_source: $input.first().json?.message?.text ? 'telegram_manual' : 'schedule'\n  }\n}];"
+      }
+    },
+    {
+      "id": "sticky-phase1",
+      "name": "PHASE 1 \u2014 TRIGGER",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        -340
+      ],
+      "parameters": {
+        "content": "## PHASE 1 \u2014 TRIGGER\nTwo entry points:\n- **Entry A**: Schedule every Monday 08:00 AM (Africa/Nairobi)\n- **Entry B**: Telegram /start command (with chat ID security check)\n\nBoth merge \u2192 job_id generated",
+        "height": 220,
+        "width": 1000,
+        "color": 4
+      }
+    },
+    {
+      "id": "sticky-phase2",
+      "name": "PHASE 2 \u2014 RESEARCH",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        560
+      ],
+      "parameters": {
+        "content": "## PHASE 2 \u2014 RESEARCH\nThree parallel HTTP requests (all branch from Generate job_id):\n- **Node A**: YouTube Trending (last 7 days, top 10 by viewCount)\n- **Node B**: Reddit Trending (r/UnresolvedMysteries+morbidquestions+interestingasfuck, top week)\n- **Node C**: Google Trends via SerpApi\n\nAll 3 feed into error handler \u2192 Claude LLM Aggregator \u2192 5 video ideas JSON\n\nError handling: individual source failures tolerated. All-fail \u2192 Telegram alert + stop. LLM parse fail \u2192 retry once with strict prompt \u2192 on 2nd fail send raw to Telegram.",
+        "height": 260,
+        "width": 1500,
+        "color": 5
+      }
+    },
+    {
+      "id": "youtube-trending",
+      "name": "Research \u2014 YouTube Trending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        820
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "snippet"
+            },
+            {
+              "name": "type",
+              "value": "video"
+            },
+            {
+              "name": "q",
+              "value": "mystery|unsolved|true crime|dark history"
+            },
+            {
+              "name": "order",
+              "value": "viewCount"
+            },
+            {
+              "name": "publishedAfter",
+              "value": "={{ new Date(Date.now() - 7*24*60*60*1000).toISOString() }}"
+            },
+            {
+              "name": "maxResults",
+              "value": "10"
+            },
+            {
+              "name": "key",
+              "value": "={{ $env.YOUTUBE_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "reddit-trending",
+      "name": "Research \u2014 Reddit Trending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        1020
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.reddit.com/r/UnresolvedMysteries+morbidquestions+interestingasfuck/top.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "t",
+              "value": "week"
+            },
+            {
+              "name": "limit",
+              "value": "10"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "n8n-youtube-bot/1.0"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "serpapi-trends",
+      "name": "Research \u2014 Google Trends via SerpApi",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        1220
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google_trends"
+            },
+            {
+              "name": "q",
+              "value": "mystery,unsolved mystery,true crime"
+            },
+            {
+              "name": "date",
+              "value": "now 7-d"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.SERPAPI_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "handle-research-errors",
+      "name": "Handle Research \u2014 Merge & Check Failures",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        1020
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nlet youtubeData = null, redditData = null, serpData = null;\nfor (const item of items) {\n  const d = item.json;\n  if (d.items && d.items[0]?.snippet?.channelId !== undefined) {\n    youtubeData = d.items.map(v => ({ title: v.snippet.title, channel: v.snippet.channelTitle }));\n  } else if (d.data?.children) {\n    redditData = d.data.children.map(p => ({ title: p.data.title, upvotes: p.data.ups }));\n  } else if (d.interest_over_time || d.related_queries) {\n    serpData = { interest: d.interest_over_time?.timeline_data?.slice(-3) || [], related: d.related_queries?.rising?.slice(0, 5) || [] };\n  }\n}\nconst allFailed = !youtubeData && !redditData && !serpData;\nreturn [{ json: { job_id: $('Generate job_id').first().json.job_id, youtube_data: youtubeData || [], reddit_data: redditData || [], serp_data: serpData || {}, all_failed: allFailed, sources_available: [youtubeData ? 'youtube' : null, redditData ? 'reddit' : null, serpData ? 'serp' : null].filter(Boolean) } }];"
+      }
+    },
+    {
+      "id": "check-all-failed",
+      "name": "IF \u2014 All Research Sources Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        750,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "all-failed-check",
+              "leftValue": "={{ $json.all_failed }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "telegram-alert-all-failed",
+      "name": "Telegram \u2014 Alert All Research Failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        820
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f All research APIs failed. Check credentials.\n\nJob ID: {{ $('Generate job_id').first().json.job_id }}\n\nPhase 2 aborted. Send /start to retry.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "llm-aggregator",
+      "name": "LLM Aggregator \u2014 Claude Generates 5 Ideas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        1220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-opus-4-5\",\"max_tokens\":1000,\"system\":\"You are a YouTube content strategist specializing in mystery and investigative storytelling. Return ONLY valid JSON, no markdown, no explanation.\",\"messages\":[{\"role\":\"user\",\"content\":\"Based on these trending data sources:\\n\\nYouTube Trends: {{ JSON.stringify($json.youtube_data) }}\\n\\nReddit Trends: {{ JSON.stringify($json.reddit_data) }}\\n\\nGoogle Trends: {{ JSON.stringify($json.serp_data) }}\\n\\nGenerate exactly 5 unique video ideas. Return this exact JSON structure:\\n{\\\"ideas\\\":[{\\\"id\\\":1,\\\"title\\\":\\\"curiosity-gap style title under 60 chars\\\",\\\"topic_summary\\\":\\\"one sentence explaining the mystery\\\",\\\"trending_reason\\\":\\\"why this is trending right now\\\",\\\"search_volume\\\":\\\"high|medium|low\\\",\\\"unique_angle\\\":\\\"what makes our take different\\\"}]}\"}]}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "parse-llm-ideas",
+      "name": "Parse \u2014 Validate LLM Ideas JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst job_id = $('Generate job_id').first().json.job_id;\nif (response.statusCode >= 400 || response.error) {\n  return [{ json: { error: true, message: 'Claude API error: ' + (response.statusCode || response.error), raw: null, retry_needed: true, job_id } }];\n}\nlet ideas;\ntry {\n  const raw = response.content[0].text;\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  ideas = parsed.ideas;\n  if (!ideas || !Array.isArray(ideas) || ideas.length !== 5) {\n    return [{ json: { error: true, message: 'Expected 5 ideas, got: ' + (ideas?.length || 0), raw, retry_needed: true, job_id } }];\n  }\n  return [{ json: { error: false, ideas, job_id, retry_needed: false } }];\n} catch(e) {\n  const raw = response.content?.[0]?.text || 'No content';\n  return [{ json: { error: true, message: 'JSON parse failed: ' + e.message, raw, retry_needed: true, job_id } }];\n}"
+      }
+    },
+    {
+      "id": "check-ideas-error",
+      "name": "IF \u2014 LLM Ideas Parse Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1500,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "error-check",
+              "leftValue": "={{ $json.error }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "llm-retry",
+      "name": "LLM Aggregator \u2014 Retry with Strict Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1750,
+        1020
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-opus-4-5\",\"max_tokens\":1000,\"system\":\"You are a YouTube content strategist. IMPORTANT: Return ONLY the raw JSON object. No other text whatsoever. No markdown. No code fences. Pure JSON only.\",\"messages\":[{\"role\":\"user\",\"content\":\"Generate exactly 5 mystery YouTube video ideas based on current trends. You must return ONLY this raw JSON object with no other text:\\n{\\\"ideas\\\":[{\\\"id\\\":1,\\\"title\\\":\\\"title under 60 chars\\\",\\\"topic_summary\\\":\\\"one sentence\\\",\\\"trending_reason\\\":\\\"why trending\\\",\\\"search_volume\\\":\\\"high|medium|low\\\",\\\"unique_angle\\\":\\\"our angle\\\"}]}\"}]}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "parse-retry-ideas",
+      "name": "Parse \u2014 Retry LLM Ideas JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        1020
+      ],
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst job_id = $('Generate job_id').first().json.job_id;\nlet ideas;\ntry {\n  const raw = response.content[0].text;\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  ideas = parsed.ideas;\n  if (!ideas || !Array.isArray(ideas) || ideas.length < 3) {\n    return [{ json: { error: true, final_failure: true, raw_output: raw, job_id } }];\n  }\n  return [{ json: { error: false, final_failure: false, ideas, job_id } }];\n} catch(e) {\n  const raw = response.content?.[0]?.text || 'No content returned';\n  return [{ json: { error: true, final_failure: true, raw_output: raw, job_id } }];\n}"
+      }
+    },
+    {
+      "id": "check-retry-failed",
+      "name": "IF \u2014 Retry Also Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2250,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "final-failure-check",
+              "leftValue": "={{ $json.final_failure }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "telegram-send-raw",
+      "name": "Telegram \u2014 Send Raw LLM Output to Operator",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2500,
+        820
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f Research idea generation failed after 2 attempts.\n\nJob ID: {{ $json.job_id }}\n\nRaw LLM output (first 3000 chars):\n{{ $json.raw_output?.substring(0, 3000) }}\n\nReply /manualtopic [your topic] to continue manually.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "store-ideas",
+      "name": "Store Ideas in Static Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "const ideas = $json.ideas;\nconst job_id = $json.job_id;\n$workflow.staticData.ideas = ideas;\n$workflow.staticData.phase = 'phase_2_complete';\nreturn [{ json: { job_id, ideas } }];"
+      }
+    },
+    {
+      "id": "sticky-phase3",
+      "name": "PHASE 3 \u2014 HUMAN TOPIC SELECTION",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        -340
+      ],
+      "parameters": {
+        "content": "## PHASE 3 \u2014 HUMAN TOPIC SELECTION\n**First human touchpoint.** Sends 5 Claude-generated ideas to Telegram.\n- Operator replies 1-5 to pick, types own topic, or /skip\n- Wait node (webhook resume) holds execution\n- 24h: reminder sent \u2192 Wait another 24h\n- 48h total: auto-cancel + notify\n- /skip or cancel action: stop workflow cleanly\n- Chosen topic + summary \u2192 stored in staticData \u2192 Phase 4",
+        "height": 260,
+        "width": 1100,
+        "color": 6
+      }
+    },
+    {
+      "id": "p3-send-ideas",
+      "name": "Telegram \u2014 Send 5 Ideas for Selection",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2800,
+        1220
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\ud83c\udfac *This week's video ideas:*\n\n1\ufe0f\u20e3 *{{ $json.ideas[0].title }}*\n   \ud83d\udcc8 {{ $json.ideas[0].search_volume }} search volume\n   \ud83d\udca1 {{ $json.ideas[0].unique_angle }}\n\n2\ufe0f\u20e3 *{{ $json.ideas[1].title }}*\n   \ud83d\udcc8 {{ $json.ideas[1].search_volume }} search volume\n   \ud83d\udca1 {{ $json.ideas[1].unique_angle }}\n\n3\ufe0f\u20e3 *{{ $json.ideas[2].title }}*\n   \ud83d\udcc8 {{ $json.ideas[2].search_volume }} search volume\n   \ud83d\udca1 {{ $json.ideas[2].unique_angle }}\n\n4\ufe0f\u20e3 *{{ $json.ideas[3].title }}*\n   \ud83d\udcc8 {{ $json.ideas[3].search_volume }} search volume\n   \ud83d\udca1 {{ $json.ideas[3].unique_angle }}\n\n5\ufe0f\u20e3 *{{ $json.ideas[4].title }}*\n   \ud83d\udcc8 {{ $json.ideas[4].search_volume }} search volume\n   \ud83d\udca1 {{ $json.ideas[4].unique_angle }}\n\n_Reply with 1-5 to choose, type your own topic, or send /skip to cancel._\n\n\ud83d\udd17 Resume link: {{ $execution.resumeUrl }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p3-wait-24h",
+      "name": "Wait \u2014 24h for Topic Reply",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3050,
+        1220
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 24,
+        "resumeUnit": "hours",
+        "options": {
+          "webhookSuffix": "topic-reply"
+        }
+      }
+    },
+    {
+      "id": "p3-check-timeout-24h",
+      "name": "IF \u2014 Timed Out at 24h?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3300,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "timeout-check",
+              "leftValue": "={{ $json.body?.message?.text }}",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p3-reminder-24h",
+      "name": "Telegram \u2014 Send 24h Reminder",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3550,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u23f0 Pipeline is waiting for your topic choice.\n\nReply 1-5, type a custom topic, or /skip to cancel.\n\n\ud83d\udd17 Resume link: {{ $execution.resumeUrl }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p3-wait-24h-more",
+      "name": "Wait \u2014 24h More (Final Window)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3800,
+        1020
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 24,
+        "resumeUnit": "hours",
+        "options": {
+          "webhookSuffix": "topic-reply-final"
+        }
+      }
+    },
+    {
+      "id": "p3-check-timeout-48h",
+      "name": "IF \u2014 Timed Out at 48h?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4050,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "timeout-48h-check",
+              "leftValue": "={{ $json.body?.message?.text }}",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p3-cancel-timeout",
+      "name": "Telegram \u2014 Auto-Cancel: No Response",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        4300,
+        820
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f Pipeline auto-cancelled due to no response.\n\nSend /start to begin again.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p3-parse-reply",
+      "name": "Code \u2014 Parse Topic Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "// Reply comes in via webhook resume \u2014 body is in $json.body\nconst reply = ($json.body?.message?.text || '').trim();\nconst job_id = $workflow.staticData.job_id;\nconst ideas = $workflow.staticData.ideas || [];\n\nif (!reply || reply === '/skip') {\n  return [{ json: { action: 'cancel', job_id } }];\n}\n\nconst num = parseInt(reply);\nif (num >= 1 && num <= 5 && ideas[num - 1]) {\n  const chosen = ideas[num - 1];\n  $workflow.staticData.chosen_topic = chosen.title;\n  $workflow.staticData.chosen_topic_summary = chosen.topic_summary;\n  $workflow.staticData.phase = 'phase_3_complete';\n  return [{ json: {\n    action: 'proceed',\n    topic: chosen.title,\n    topic_summary: chosen.topic_summary,\n    job_id\n  }}];\n}\n\n// Custom topic typed by operator\n$workflow.staticData.chosen_topic = reply;\n$workflow.staticData.chosen_topic_summary = '';\n$workflow.staticData.phase = 'phase_3_complete';\nreturn [{ json: {\n  action: 'proceed',\n  topic: reply,\n  topic_summary: '',\n  job_id\n}}];"
+      }
+    },
+    {
+      "id": "p3-if-cancel",
+      "name": "IF \u2014 Action is Cancel?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4550,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cancel-check",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "cancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p3-cancel-notify",
+      "name": "Telegram \u2014 Notify Pipeline Cancelled",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        4800,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=Pipeline cancelled. \u2705\n\nSend /start whenever you're ready for a new video.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p3-topic-ready",
+      "name": "Code \u2014 Store Chosen Topic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        1420
+      ],
+      "parameters": {
+        "jsCode": "// Persist chosen topic for Phase 4\nconst { topic, topic_summary, job_id } = $json;\n$workflow.staticData.chosen_topic = topic;\n$workflow.staticData.chosen_topic_summary = topic_summary;\n$workflow.staticData.phase = 'phase_3_complete';\n\nreturn [{ json: { job_id, topic, topic_summary } }];"
+      }
+    },
+    {
+      "id": "sticky-phase4",
+      "name": "PHASE 4 \u2014 SCRIPT GENERATION",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4900,
+        1100
+      ],
+      "parameters": {
+        "content": "## PHASE 4 \u2014 SCRIPT GENERATION\nClaude writes a full structured JSON script (\u226520 scenes, 4.5\u20135.5 min).\n\n**Happy path:** Store Chosen Topic \u2192 LLM Writer \u2192 Validate \u2192 Store Script \u2192 Phase 5\n\n**Retry path:** Validate fails \u2192 Retry with strict prompt \u2192 Validate again\n\n**Fallback path:** Both LLM attempts fail \u2192 Telegram raw output + Wait for operator reply\n  - /retry \u2192 back to LLM Writer\n  - /skip  \u2192 cancel pipeline\n\n**Outputs stored in staticData:** script, total_duration, phase='phase_4_complete'",
+        "height": 280,
+        "width": 2200,
+        "color": 7
+      }
+    },
+    {
+      "id": "p4-script-writer",
+      "name": "LLM \u2014 Write Script (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5100,
+        1420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-opus-4-5\",\"max_tokens\":4000,\"system\":\"You are a professional scriptwriter for a mystery YouTube channel. You write engaging, factual scripts in a suspenseful tone. You always return ONLY valid raw JSON with no markdown formatting, no code fences, no explanation before or after.\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a complete script for a 5-minute YouTube mystery video about: ={{ $workflow.staticData.chosen_topic }}\\n\\nReturn this exact JSON structure with no deviations:\\n{\\n  \\\"title\\\": \\\"curiosity-gap YouTube title, max 60 chars\\\",\\n  \\\"description\\\": \\\"SEO-rich description, 150 words, includes main keywords naturally\\\",\\n  \\\"tags\\\": [\\\"tag1\\\",\\\"tag2\\\",\\\"tag3\\\",\\\"tag4\\\",\\\"tag5\\\",\\\"tag6\\\",\\\"tag7\\\",\\\"tag8\\\",\\\"tag9\\\",\\\"tag10\\\"],\\n  \\\"thumbnail_text\\\": \\\"max 4 words, punchy, high contrast text for thumbnail\\\",\\n  \\\"chapters\\\": \\\"0:00 Introduction\\n0:30 The Mystery Begins\\n2:00 Key Evidence\\n3:30 The Theories\\n4:30 What We Know\\\",\\n  \\\"scenes\\\": [\\n    {\\n      \\\"scene_id\\\": 1,\\n      \\\"narration\\\": \\\"full narration text for this scene\\\",\\n      \\\"duration_seconds\\\": 8,\\n      \\\"visual_keyword\\\": \\\"specific descriptive keyword for stock footage search\\\",\\n      \\\"mood\\\": \\\"tense|eerie|dramatic|calm|shocking\\\",\\n      \\\"is_hook\\\": true,\\n      \\\"clip_marker\\\": \\\"HOOK\\\"\\n    }\\n  ],\\n  \\\"full_narration\\\": \\\"complete script as one continuous string\\\",\\n  \\\"short_clip_scenes\\\": [1, 8, 15]\\n}\\n\\nRules:\\n- Minimum 20 scenes\\n- Total duration of all scenes must sum to 270-330 seconds (4.5 to 5.5 minutes)\\n- scene_id 1 must be is_hook: true with clip_marker: HOOK\\n- Mark the most dramatic scene as clip_marker: CLIMAX\\n- Mark the final scene as clip_marker: ENDING\\n- short_clip_scenes must reference scene_ids of HOOK, CLIMAX, and ENDING\\n- Every visual_keyword must be specific and searchable (e.g. 'foggy abandoned ship deck' not just 'ship')\\n- Start with the most shocking reveal as the hook\"}]}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p4-validate-script",
+      "name": "Code \u2014 Validate Script JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5350,
+        1420
+      ],
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst job_id = $workflow.staticData.job_id;\n\n// Catch upstream HTTP errors\nif (response.statusCode >= 400 || response.error) {\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'Claude API error: ' + (response.statusCode || response.error),\n    raw: null,\n    job_id\n  }}];\n}\n\nlet script;\ntry {\n  const raw = response.content[0].text;\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  script = JSON.parse(cleaned);\n} catch(e) {\n  const raw = response.content?.[0]?.text || 'No content';\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'JSON parse failed: ' + e.message,\n    raw,\n    job_id\n  }}];\n}\n\n// Structural checks\nif (!script.scenes || !Array.isArray(script.scenes) || script.scenes.length < 15) {\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'Too few scenes: ' + (script.scenes?.length || 0),\n    raw: JSON.stringify(script).substring(0, 500),\n    job_id\n  }}];\n}\n\nconst totalDuration = script.scenes.reduce((sum, s) => sum + (s.duration_seconds || 0), 0);\nif (totalDuration < 240 || totalDuration > 420) {\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'Duration out of range: ' + totalDuration + 's (expected 240-420)',\n    raw: JSON.stringify(script).substring(0, 500),\n    job_id\n  }}];\n}\n\nif (!script.full_narration || script.full_narration.length < 500) {\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'Narration too short: ' + (script.full_narration?.length || 0) + ' chars',\n    raw: JSON.stringify(script).substring(0, 500),\n    job_id\n  }}];\n}\n\n// Marker checks\nconst hasHook    = script.scenes.some(s => s.clip_marker === 'HOOK');\nconst hasClimax  = script.scenes.some(s => s.clip_marker === 'CLIMAX');\nconst hasEnding  = script.scenes.some(s => s.clip_marker === 'ENDING');\nif (!hasHook || !hasClimax || !hasEnding) {\n  return [{ json: {\n    error: true,\n    final_failure: false,\n    message: 'Missing scene markers. HOOK:' + hasHook + ' CLIMAX:' + hasClimax + ' ENDING:' + hasEnding,\n    raw: JSON.stringify(script).substring(0, 500),\n    job_id\n  }}];\n}\n\nreturn [{ json: { error: false, final_failure: false, script, totalDuration, job_id } }];\n"
+      }
+    },
+    {
+      "id": "p4-check-error",
+      "name": "IF \u2014 Script Validation Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5600,
+        1420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "error-check",
+              "leftValue": "={{ $json.error }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p4-script-retry",
+      "name": "LLM \u2014 Write Script Retry (Strict Prompt)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5850,
+        1220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"claude-opus-4-5\",\"max_tokens\":4000,\"system\":\"You are a professional scriptwriter for a mystery YouTube channel. IMPORTANT: Return ONLY the raw JSON object. No other text whatsoever. No markdown. No code fences. Pure JSON only.\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a complete script for a 5-minute YouTube mystery video about: ={{ $workflow.staticData.chosen_topic }}\\n\\nIMPORTANT: Return ONLY the raw JSON object. No other text whatsoever. No markdown. No code fences. Pure JSON only.\\n\\nReturn this exact JSON structure with no deviations:\\n{\\n  \\\"title\\\": \\\"curiosity-gap YouTube title, max 60 chars\\\",\\n  \\\"description\\\": \\\"SEO-rich description, 150 words, includes main keywords naturally\\\",\\n  \\\"tags\\\": [\\\"tag1\\\",\\\"tag2\\\",\\\"tag3\\\",\\\"tag4\\\",\\\"tag5\\\",\\\"tag6\\\",\\\"tag7\\\",\\\"tag8\\\",\\\"tag9\\\",\\\"tag10\\\"],\\n  \\\"thumbnail_text\\\": \\\"max 4 words, punchy, high contrast text for thumbnail\\\",\\n  \\\"chapters\\\": \\\"0:00 Introduction\\n0:30 The Mystery Begins\\n2:00 Key Evidence\\n3:30 The Theories\\n4:30 What We Know\\\",\\n  \\\"scenes\\\": [\\n    {\\n      \\\"scene_id\\\": 1,\\n      \\\"narration\\\": \\\"full narration text for this scene\\\",\\n      \\\"duration_seconds\\\": 8,\\n      \\\"visual_keyword\\\": \\\"specific descriptive keyword for stock footage search\\\",\\n      \\\"mood\\\": \\\"tense|eerie|dramatic|calm|shocking\\\",\\n      \\\"is_hook\\\": true,\\n      \\\"clip_marker\\\": \\\"HOOK\\\"\\n    }\\n  ],\\n  \\\"full_narration\\\": \\\"complete script as one continuous string\\\",\\n  \\\"short_clip_scenes\\\": [1, 8, 15]\\n}\\n\\nRules:\\n- Minimum 20 scenes\\n- Total duration of all scenes must sum to 270-330 seconds (4.5 to 5.5 minutes)\\n- scene_id 1 must be is_hook: true with clip_marker: HOOK\\n- Mark the most dramatic scene as clip_marker: CLIMAX\\n- Mark the final scene as clip_marker: ENDING\\n- short_clip_scenes must reference scene_ids of HOOK, CLIMAX, and ENDING\\n- Every visual_keyword must be specific and searchable (e.g. 'foggy abandoned ship deck' not just 'ship')\\n- Start with the most shocking reveal as the hook\"}]}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p4-validate-retry",
+      "name": "Code \u2014 Validate Retry Script JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6100,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst job_id = $workflow.staticData.job_id;\n\nif (response.statusCode >= 400 || response.error) {\n  return [{ json: {\n    error: true,\n    final_failure: true,\n    message: 'Claude API error on retry: ' + (response.statusCode || response.error),\n    raw_output: 'API error \u2014 no content returned',\n    job_id\n  }}];\n}\n\nlet script;\ntry {\n  const raw = response.content[0].text;\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  script = JSON.parse(cleaned);\n} catch(e) {\n  const raw = response.content?.[0]?.text || 'No content';\n  return [{ json: {\n    error: true,\n    final_failure: true,\n    message: 'Retry JSON parse failed: ' + e.message,\n    raw_output: raw,\n    job_id\n  }}];\n}\n\nconst hasScenes = script.scenes && Array.isArray(script.scenes) && script.scenes.length >= 15;\nconst totalDuration = script.scenes?.reduce((sum, s) => sum + (s.duration_seconds || 0), 0) || 0;\nconst durationOk = totalDuration >= 240 && totalDuration <= 420;\nconst narrationOk = script.full_narration && script.full_narration.length >= 500;\n\nif (!hasScenes || !durationOk || !narrationOk) {\n  const raw = JSON.stringify(script).substring(0, 3000);\n  return [{ json: {\n    error: true,\n    final_failure: true,\n    message: 'Retry validation failed. scenes:' + (script.scenes?.length || 0) + ' dur:' + totalDuration + 's narr:' + (script.full_narration?.length || 0),\n    raw_output: raw,\n    job_id\n  }}];\n}\n\nreturn [{ json: { error: false, final_failure: false, script, totalDuration, job_id } }];\n"
+      }
+    },
+    {
+      "id": "p4-check-retry",
+      "name": "IF \u2014 Retry Script Also Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        6350,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "final-failure-check",
+              "leftValue": "={{ $json.final_failure }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p4-send-raw-script",
+      "name": "Telegram \u2014 Send Raw Script Output to Operator",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        6600,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f Script generation failed after 2 attempts.\n\nTopic: {{ $workflow.staticData.chosen_topic }}\nJob ID: {{ $json.job_id }}\nReason: {{ $json.message }}\n\nRaw output (first 2000 chars):\n{{ $json.raw_output?.substring(0, 2000) }}\n\nReply:\n/retry \u2014 generate fresh script\n/skip \u2014 cancel this pipeline run\n\n\ud83d\udd17 Resume link: {{ $execution.resumeUrl }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p4-wait-operator",
+      "name": "Wait \u2014 Operator Script Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        6600,
+        1220
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "limitWaitTime": false,
+        "options": {
+          "webhookSuffix": "script-decision"
+        }
+      }
+    },
+    {
+      "id": "p4-parse-op-reply",
+      "name": "Code \u2014 Parse Operator Script Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6850,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "\n// Operator replied to the failed-script Telegram message\n// They can: /retry (generate fresh), /skip (cancel this pipeline run)\nconst reply = ($json.body?.message?.text || '').trim().toLowerCase();\nconst job_id = $workflow.staticData.job_id;\n\nif (!reply || reply === '/skip') {\n  return [{ json: { action: 'cancel', job_id } }];\n}\nif (reply === '/retry') {\n  return [{ json: { action: 'retry', job_id } }];\n}\n// Any unrecognised input \u2192 cancel safely\nreturn [{ json: { action: 'cancel', job_id } }];\n"
+      }
+    },
+    {
+      "id": "p4-if-skip",
+      "name": "IF \u2014 Operator Cancelled Script?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        7100,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "cancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p4-cancel-notify",
+      "name": "Telegram \u2014 Notify Script Generation Cancelled",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        7350,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=Pipeline cancelled at script generation.\n\nSend /start whenever you're ready for a new video.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p4-store-script",
+      "name": "Code \u2014 Store Script in Static Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5850,
+        1620
+      ],
+      "parameters": {
+        "jsCode": "\nconst { script, totalDuration, job_id } = $json;\n$workflow.staticData.script = script;\n$workflow.staticData.total_duration = totalDuration;\n$workflow.staticData.phase = 'phase_4_complete';\nreturn [{ json: { job_id, script, totalDuration } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule \u2014 Every Monday 8AM": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Combine Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram \u2014 Listen for /start": {
+      "main": [
+        [
+          {
+            "node": "Validate \u2014 Check Chat ID & /start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate \u2014 Check Chat ID & /start": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Combine Triggers",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        []
+      ]
+    },
+    "Merge \u2014 Combine Triggers": {
+      "main": [
+        [
+          {
+            "node": "Generate job_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate job_id": {
+      "main": [
+        [
+          {
+            "node": "Research \u2014 YouTube Trending",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Research \u2014 Reddit Trending",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Research \u2014 Google Trends via SerpApi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research \u2014 YouTube Trending": {
+      "main": [
+        [
+          {
+            "node": "Handle Research \u2014 Merge & Check Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research \u2014 Reddit Trending": {
+      "main": [
+        [
+          {
+            "node": "Handle Research \u2014 Merge & Check Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research \u2014 Google Trends via SerpApi": {
+      "main": [
+        [
+          {
+            "node": "Handle Research \u2014 Merge & Check Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Research \u2014 Merge & Check Failures": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 All Research Sources Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 All Research Sources Failed?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Alert All Research Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM Aggregator \u2014 Claude Generates 5 Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Aggregator \u2014 Claude Generates 5 Ideas": {
+      "main": [
+        [
+          {
+            "node": "Parse \u2014 Validate LLM Ideas JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse \u2014 Validate LLM Ideas JSON": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 LLM Ideas Parse Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 LLM Ideas Parse Failed?": {
+      "main": [
+        [
+          {
+            "node": "LLM Aggregator \u2014 Retry with Strict Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Ideas in Static Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Aggregator \u2014 Retry with Strict Prompt": {
+      "main": [
+        [
+          {
+            "node": "Parse \u2014 Retry LLM Ideas JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse \u2014 Retry LLM Ideas JSON": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Retry Also Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Retry Also Failed?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Send Raw LLM Output to Operator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Ideas in Static Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Ideas in Static Data": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Send 5 Ideas for Selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram \u2014 Send 5 Ideas for Selection": {
+      "main": [
+        [
+          {
+            "node": "Wait \u2014 24h for Topic Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 24h for Topic Reply": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Timed Out at 24h?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Timed Out at 24h?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Send 24h Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Parse Topic Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram \u2014 Send 24h Reminder": {
+      "main": [
+        [
+          {
+            "node": "Wait \u2014 24h More (Final Window)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 24h More (Final Window)": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Timed Out at 48h?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Timed Out at 48h?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Auto-Cancel: No Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Parse Topic Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Parse Topic Reply": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Action is Cancel?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Action is Cancel?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Notify Pipeline Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Store Chosen Topic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Store Chosen Topic": {
+      "main": [
+        [
+          {
+            "node": "LLM \u2014 Write Script (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM \u2014 Write Script (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Validate Script JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Validate Script JSON": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Script Validation Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Script Validation Failed?": {
+      "main": [
+        [
+          {
+            "node": "LLM \u2014 Write Script Retry (Strict Prompt)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Store Script in Static Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM \u2014 Write Script Retry (Strict Prompt)": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Validate Retry Script JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Validate Retry Script JSON": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Retry Script Also Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Retry Script Also Failed?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Send Raw Script Output to Operator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Store Script in Static Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram \u2014 Send Raw Script Output to Operator": {
+      "main": [
+        [
+          {
+            "node": "Wait \u2014 Operator Script Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 Operator Script Decision": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Parse Operator Script Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Parse Operator Script Reply": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Operator Cancelled Script?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Operator Cancelled Script?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Notify Script Generation Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM \u2014 Write Script (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}
