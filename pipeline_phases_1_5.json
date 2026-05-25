@@ -1144,6 +1144,556 @@
       "parameters": {
         "jsCode": "\nconst { script, totalDuration, job_id } = $json;\n$workflow.staticData.script = script;\n$workflow.staticData.total_duration = totalDuration;\n$workflow.staticData.phase = 'phase_4_complete';\nreturn [{ json: { job_id, script, totalDuration } }];\n"
       }
+    },
+    {
+      "id": "sticky-phase5",
+      "name": "PHASE 5 \u2014 VOICEOVER GENERATION",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        7500,
+        700
+      ],
+      "parameters": {
+        "content": "## PHASE 5 \u2014 VOICEOVER GENERATION\nElevenLabs TTS \u2192 R2 upload \u2192 duration check \u2192 Phase 6\n\n**Note:** ElevenLabs and R2 Upload nodes use placeholder config.\nWire binary response handling in the UI after import.\n\nRate limit (429) \u2192 Wait 60s \u2192 retry\nAuth fail (401/403) \u2192 Telegram alert \u2192 stop\nR2 fail \u2192 retry 3\u00d7 (5s/15s/45s backoff)\nToo short (<180s) \u2192 alert + stop\nToo long (>420s) \u2192 alert + wait \u2192 /approve or /regenerate",
+        "height": 300,
+        "width": 3800,
+        "color": 3
+      }
+    },
+    {
+      "id": "p5-tts",
+      "name": "ElevenLabs \u2014 Generate Voiceover",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7800,
+        1220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.elevenlabs.io/v1/text-to-speech/{{ $env.ELEVENLABS_VOICE_ID }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xi-api-key",
+              "value": "={{ $env.ELEVENLABS_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "audio/mpeg"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"text\":\"{{ $workflow.staticData.script.full_narration }}\",\"model_id\":\"eleven_multilingual_v2\",\"voice_settings\":{\"stability\":0.75,\"similarity_boost\":0.85,\"style\":0.40,\"use_speaker_boost\":true}}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p5-check-tts-error",
+      "name": "Code \u2014 Check TTS Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8050,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "\nconst res = $input.first().json;\nconst statusCode = res.$response?.statusCode || res.statusCode || 200;\n\nif (statusCode === 429) {\n  return [{ json: { tts_error: true, error_type: 'rate_limit', status: statusCode, job_id: $workflow.staticData.job_id } }];\n}\nif (statusCode === 401 || statusCode === 403) {\n  return [{ json: { tts_error: true, error_type: 'auth_fail', status: statusCode, job_id: $workflow.staticData.job_id } }];\n}\nif (statusCode >= 400) {\n  return [{ json: { tts_error: true, error_type: 'api_error', status: statusCode, job_id: $workflow.staticData.job_id } }];\n}\nreturn [{ json: { tts_error: false, error_type: null, job_id: $workflow.staticData.job_id } }];\n"
+      }
+    },
+    {
+      "id": "p5-if-tts-error",
+      "name": "IF \u2014 TTS Request Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        8300,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "tts-error-check",
+              "leftValue": "={{ $json.tts_error }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-if-rate-limit",
+      "name": "IF \u2014 Rate Limited (429)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        8550,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "rate-limit-check",
+              "leftValue": "={{ $json.error_type }}",
+              "rightValue": "rate_limit",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-wait-rate-limit",
+      "name": "Wait \u2014 60s Rate Limit Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        8800,
+        820
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "resumeAmount": 60,
+        "resumeUnit": "seconds"
+      }
+    },
+    {
+      "id": "p5-tts-auth-fail",
+      "name": "Telegram \u2014 Alert ElevenLabs Auth Failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        8800,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f ElevenLabs authentication failed ({{ $json.status }}).\n\nJob ID: {{ $json.job_id }}\n\nCheck ELEVENLABS_API_KEY. Send /start to retry.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p5-upload-r2",
+      "name": "R2 \u2014 Upload Audio MP3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8550,
+        1220
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://{{ $env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com/{{ $env.R2_BUCKET_NAME }}/audio/{{ $workflow.staticData.job_id }}.mp3",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "audio/mpeg"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p5-check-upload",
+      "name": "Code \u2014 Check R2 Upload Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8800,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "\nconst res = $input.first().json;\nconst statusCode = res.$response?.statusCode || res.statusCode || 200;\n\nif (statusCode >= 200 && statusCode < 300) {\n  const jobId = $workflow.staticData.job_id;\n  const publicUrl = $env.R2_PUBLIC_URL + '/audio/' + jobId + '.mp3';\n  $workflow.staticData.audio_url = publicUrl;\n  return [{ json: { upload_error: false, audio_url: publicUrl, job_id: jobId } }];\n}\nreturn [{ json: { upload_error: true, status: statusCode, job_id: $workflow.staticData.job_id } }];\n"
+      }
+    },
+    {
+      "id": "p5-if-upload-error",
+      "name": "IF \u2014 R2 Upload Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9050,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "upload-error-check",
+              "leftValue": "={{ $json.upload_error }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-upload-retry-counter",
+      "name": "Code \u2014 R2 Upload Retry Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9300,
+        1020
+      ],
+      "parameters": {
+        "jsCode": "\nconst attempt = ($workflow.staticData.r2_upload_attempt || 0) + 1;\n$workflow.staticData.r2_upload_attempt = attempt;\nconst job_id = $workflow.staticData.job_id;\nconst backoffSeconds = [5, 15, 45];\n\nif (attempt > 3) {\n  return [{ json: { give_up: true, attempt, job_id } }];\n}\nreturn [{ json: { give_up: false, attempt, waitSeconds: backoffSeconds[attempt - 1] || 45, job_id } }];\n"
+      }
+    },
+    {
+      "id": "p5-if-give-up-upload",
+      "name": "IF \u2014 R2 Upload Max Retries Exceeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9550,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "give-up-check",
+              "leftValue": "={{ $json.give_up }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-wait-upload-backoff",
+      "name": "Wait \u2014 Upload Retry Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        9550,
+        820
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "resumeAmount": "={{ $json.waitSeconds }}",
+        "resumeUnit": "seconds"
+      }
+    },
+    {
+      "id": "p5-alert-upload-fail",
+      "name": "Telegram \u2014 Alert R2 Upload Failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        9800,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f R2 audio upload failed after 3 attempts.\n\nJob ID: {{ $json.job_id }}\n\nCheck R2 credentials and bucket permissions. Send /start to retry.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p5-get-duration",
+      "name": "FFmpeg \u2014 Get Audio Duration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9300,
+        1220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FFMPEG_SERVER_URL }}/get-duration",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"audio_url\":\"{{ $json.audio_url }}\"}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p5-check-duration",
+      "name": "Code \u2014 Classify Audio Duration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9550,
+        1220
+      ],
+      "parameters": {
+        "jsCode": "\nconst res = $input.first().json;\nconst totalSeconds = res.total_seconds;\nconst job_id = $workflow.staticData.job_id;\n\nif (!totalSeconds || typeof totalSeconds !== 'number') {\n  return [{ json: { duration_status: 'error', totalSeconds: 0, job_id } }];\n}\n$workflow.staticData.total_seconds = totalSeconds;\n\nif (totalSeconds < 180) {\n  return [{ json: { duration_status: 'too_short', totalSeconds, job_id } }];\n}\nif (totalSeconds > 420) {\n  return [{ json: { duration_status: 'too_long', totalSeconds, job_id } }];\n}\nreturn [{ json: { duration_status: 'ok', totalSeconds, job_id } }];\n"
+      }
+    },
+    {
+      "id": "p5-if-too-short",
+      "name": "IF \u2014 Audio Too Short?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9800,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "too-short-check",
+              "leftValue": "={{ $json.duration_status }}",
+              "rightValue": "too_short",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-alert-too-short",
+      "name": "Telegram \u2014 Alert Audio Too Short",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        10050,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f Generated audio is too short ({{ $json.totalSeconds }}s \u2014 minimum 180s).\n\nJob ID: {{ $json.job_id }}\nTopic: {{ $workflow.staticData.chosen_topic }}\n\nSend /start to begin a new pipeline run.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p5-if-too-long",
+      "name": "IF \u2014 Audio Too Long?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        10050,
+        1220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "too-long-check",
+              "leftValue": "={{ $json.duration_status }}",
+              "rightValue": "too_long",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-alert-too-long",
+      "name": "Telegram \u2014 Alert Audio Too Long",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        10300,
+        1020
+      ],
+      "parameters": {
+        "chatId": "={{ $env.OPERATOR_TELEGRAM_CHAT_ID }}",
+        "text": "=\u26a0\ufe0f Audio is {{ $json.totalSeconds }}s (limit 420s).\n\nJob ID: {{ $json.job_id }}\nTopic: {{ $workflow.staticData.chosen_topic }}\n\nReply:\n/approve \u2014 continue anyway\n/regenerate \u2014 discard and regenerate script\n\n\ud83d\udd17 Resume: {{ $execution.resumeUrl }}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_token",
+          "name": "Telegram Bot Token"
+        }
+      }
+    },
+    {
+      "id": "p5-wait-long-audio",
+      "name": "Wait \u2014 Operator Long Audio Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        10550,
+        1020
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {
+          "webhookSuffix": "long-audio-decision"
+        }
+      }
+    },
+    {
+      "id": "p5-parse-long-reply",
+      "name": "Code \u2014 Parse Long Audio Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10800,
+        1020
+      ],
+      "parameters": {
+        "jsCode": "\nconst reply = ($json.body?.message?.text || '').trim().toLowerCase();\nconst job_id = $workflow.staticData.job_id;\nif (reply === '/regenerate') {\n  return [{ json: { action: 'regenerate', job_id } }];\n}\nreturn [{ json: { action: 'approve', job_id } }];\n"
+      }
+    },
+    {
+      "id": "p5-if-approve",
+      "name": "IF \u2014 Operator Approved Long Audio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        11050,
+        1020
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "approve-check",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "p5-store-audio",
+      "name": "Code \u2014 Store Audio URL in Static Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10050,
+        1420
+      ],
+      "parameters": {
+        "jsCode": "\nconst audio_url = $json.audio_url || $workflow.staticData.audio_url;\nconst job_id = $workflow.staticData.job_id;\nconst totalSeconds = $workflow.staticData.total_seconds || 0;\n$workflow.staticData.audio_url = audio_url;\n$workflow.staticData.r2_upload_attempt = 0;\n$workflow.staticData.phase = 'phase_5_complete';\nreturn [{ json: { job_id, audio_url, total_seconds: totalSeconds } }];\n"
+      }
     }
   ],
   "connections": {
@@ -1604,6 +2154,275 @@
         [
           {
             "node": "Telegram \u2014 Notify Script Generation Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM \u2014 Write Script (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Store Script in Static Data": {
+      "main": [
+        [
+          {
+            "node": "ElevenLabs \u2014 Generate Voiceover",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ElevenLabs \u2014 Generate Voiceover": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Check TTS Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Check TTS Response": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 TTS Request Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 TTS Request Failed?": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Rate Limited (429)?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "R2 \u2014 Upload Audio MP3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Rate Limited (429)?": {
+      "main": [
+        [
+          {
+            "node": "Wait \u2014 60s Rate Limit Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram \u2014 Alert ElevenLabs Auth Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 60s Rate Limit Backoff": {
+      "main": [
+        [
+          {
+            "node": "ElevenLabs \u2014 Generate Voiceover",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "R2 \u2014 Upload Audio MP3": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Check R2 Upload Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Check R2 Upload Result": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 R2 Upload Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 R2 Upload Failed?": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 R2 Upload Retry Counter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FFmpeg \u2014 Get Audio Duration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 R2 Upload Retry Counter": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 R2 Upload Max Retries Exceeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 R2 Upload Max Retries Exceeded?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Alert R2 Upload Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait \u2014 Upload Retry Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 Upload Retry Backoff": {
+      "main": [
+        [
+          {
+            "node": "R2 \u2014 Upload Audio MP3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFmpeg \u2014 Get Audio Duration": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Classify Audio Duration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Classify Audio Duration": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Audio Too Short?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Audio Too Short?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Alert Audio Too Short",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF \u2014 Audio Too Long?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Audio Too Long?": {
+      "main": [
+        [
+          {
+            "node": "Telegram \u2014 Alert Audio Too Long",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code \u2014 Store Audio URL in Static Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram \u2014 Alert Audio Too Long": {
+      "main": [
+        [
+          {
+            "node": "Wait \u2014 Operator Long Audio Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait \u2014 Operator Long Audio Decision": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Parse Long Audio Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u2014 Parse Long Audio Reply": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Operator Approved Long Audio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Operator Approved Long Audio?": {
+      "main": [
+        [
+          {
+            "node": "Code \u2014 Store Audio URL in Static Data",
             "type": "main",
             "index": 0
           }
